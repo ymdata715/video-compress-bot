@@ -122,7 +122,7 @@ def main():
     app.add_handler(CommandHandler("stats", my_stats))
     app.add_handler(CallbackQueryHandler(check_sub, pattern="check_sub"))
     app.add_handler(CallbackQueryHandler(on_quality, pattern="^q_"))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO | filters.Document.MIME_TYPE("video/mp4"), on_video))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, on_video))
     app.run_polling()
 
 if __name__ == "__main__":
