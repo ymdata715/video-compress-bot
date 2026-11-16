@@ -1,285 +1,178 @@
-import os, json, subprocess, logging, time, datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, ContextTypes, filters
+import os, subprocess, json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL = "@Y_EMEN21s" # قناتك الأساسية
+TOKEN = os.getenv("BOT_TOKEN")
+BOT_API_URL = os.getenv("BOT_API_URL", "https://api.telegram.org/bot")
 ADMIN_ID = 8452001738
-BASE_URL = os.environ.get("BOT_API_URL", "https://api.telegram.org/bot")
-STATS_FILE = "stats.json"
-logging.basicConfig(level=logging.INFO)
-pending = {}
-user_state = {}
+DB = "users.json"
+MAX_SIZE = 2 * 1024 * 1024 * 1024
 
-def load_stats():
-    if os.path.exists(STATS_FILE):
-        try:
-            with open(STATS_FILE) as f: return json.load(f)
-        except: pass
-    return {"users": [], "videos": 0, "ads_shown": 0, "premium": {}, "daily": {}, "banned": [], "force_channels": ["@Y_EMEN21s"], "price_month": 50, "price_year": 300}
-def save_stats(d):
-    with open(STATS_FILE, "w") as f: json.dump(d, f)
-stats = load_stats()
-
-def is_premium(uid):
-    return stats.get("premium", {}).get(str(uid), 0) > time.time()
-def can_use(uid):
-    if is_premium(uid): return True
-    today = datetime.date.today().isoformat()
-    return stats.get("daily", {}).get(str(uid), {}).get(today, 0) < 3
-def add_use(uid):
-    today = datetime.date.today().isoformat()
-    stats.setdefault("daily", {}).setdefault(str(uid), {})[today] = stats["daily"][str(uid)].get(today, 0) + 1
-    save_stats(stats)
-
-# ===== فحص الاشتراك الإجباري =====
-async def check_force_sub(context, uid):
-    # يرجع قائمة القنوات اللي المستخدم مش مشترك فيها
-    not_joined = []
-    for ch in stats.get("force_channels", []):
-        try:
-            member = await context.bot.get_chat_member(ch, uid)
-            if member.status in ["left", "kicked"]:
-                not_joined.append(ch)
-        except:
-            not_joined.append(ch)
-    return not_joined
-
-async def send_force_msg(msg, not_joined):
-    buttons = [[InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")] for ch in not_joined]
-    buttons.append([InlineKeyboardButton("✅ تحققت - اشتركت", callback_data="check_sub")])
-    await msg.reply_text(
-        "⛔ عشان تستخدم البوت لازم تشترك في القنوات هذي أولاً:\n\n"
-        "اشترك وبعدين اضغط تحققت.",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-VIDEO_QUALITIES = {
-    "2160": {"label": "4K", "scale": "3840", "crf": "19", "audio": "192k", "preset": "medium"},
-    "1440": {"label": "2K", "scale": "2560", "crf": "20", "audio": "192k", "preset": "medium"},
-    "1080": {"label": "1080p", "scale": "1920", "crf": "20", "audio": "192k", "preset": "medium"},
-    "720": {"label": "720p", "scale": "1280", "crf": "22", "audio": "128k", "preset": "medium"},
-    "480": {"label": "480p", "scale": "854", "crf": "24", "audio": "96k", "preset": "veryfast"},
-    "360": {"label": "360p", "scale": "640", "crf": "26", "audio": "64k", "preset": "veryfast"},
-    "240": {"label": "240p - نت ضعيف", "scale": "426", "crf": "28", "audio": "48k", "preset": "veryfast"},
-    "144": {"label": "144p - نت ضعيف جداً", "scale": "256", "crf": "30", "audio": "32k", "preset": "veryfast"},
-    "auto": {"label": "🤖 ذكي", "scale": "1280", "crf": "23", "audio": "128k", "preset": "medium"},
-}
-AUDIO_QUALITIES = {
-    "mp3_320": {"label": "MP3 320kbps", "ext": "mp3", "bitrate": "320k"},
-    "mp3_128": {"label": "MP3 128kbps", "ext": "mp3", "bitrate": "128k"},
-    "mp3_64": {"label": "MP3 64kbps", "ext": "mp3", "bitrate": "64k"},
-    "voice": {"label": "رسالة صوتية", "ext": "ogg", "bitrate": "32k"},
-}
+def load():
+    try:
+        d = json.load(open(DB))
+        if "promo_link" not in d: d["promo_link"] = ""
+        return d
+    except: return {"users":{}, "channels":[], "prices":{"month":100, "year":500}, "promo_link":""}
+def save(d): json.dump(d, open(DB,"w"))
+data = load()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid in stats.get("banned", []):
-        await update.message.reply_text("❌ انت محظور."); return
-    if uid not in stats["users"]:
-        stats["users"].append(uid); save_stats(stats)
-    # فحص الاشتراك الإجباري قبل أي شي
-    not_joined = await check_force_sub(context, uid)
-    if not_joined:
-        await send_force_msg(update.message, not_joined); return
-    prem = "⭐ مميز" if is_premium(uid) else "مجاني - 3 مرات في اليوم"
-    await update.message.reply_text(f"أهلاً بك 🔥\nحسابك: {prem}\n\nأرسل فيديو واختار:\n🎬 ضغط\n✂️ قص\n🎵 صوت\n\nالبوت مجاني بدعم من {CHANNEL}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ اشتراك مميز", callback_data="buy")],[InlineKeyboardButton("📢 قناتنا", url=f"https://t.me/{CHANNEL.replace('@','')}")]]))
-
-# ===== لوحة تحكم المدير - كاملة من داخل البوت =====
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("🛠 لوحة تحكم المدير:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 إحصائيات", callback_data="admin_stats")],
-            [InlineKeyboardButton("⭐ قائمة المميزين", callback_data="admin_premium")],
-            [InlineKeyboardButton("📢 إذاعة للكل", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("🚫 حظر / ✅ فك حظر", callback_data="admin_ban")],
-            [InlineKeyboardButton("🎁 إعطاء اشتراك مجاني", callback_data="admin_gift")],
-            [InlineKeyboardButton("━━━━━━━━━━ 📢 قنوات الاشتراك الإجباري ━━━━━━━━━━", callback_data="noop")],
-            [InlineKeyboardButton("➕ إضافة قناة إجبارية", callback_data="admin_add_channel")],
-            [InlineKeyboardButton("📋 عرض القنوات الإجبارية", callback_data="admin_list_channels")],
-            [InlineKeyboardButton("🗑 حذف قناة إجبارية", callback_data="admin_del_channel")],
-            [InlineKeyboardButton("━━━━━━━━━━ 💰 أسعار النجوم ━━━━━━━━━━", callback_data="noop")],
-            [InlineKeyboardButton(f"💰 سعر الشهر: {stats.get('price_month',50)} نجمة - تغيير", callback_data="admin_price_month")],
-            [InlineKeyboardButton(f"💰 سعر السنة: {stats.get('price_year',300)} نجمة - تغيير", callback_data="admin_price_year")],
-        ]))
-
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    if q.from_user.id != ADMIN_ID: return
-    if q.data == "admin_stats":
-        prem_count = len([k for k,v in stats.get("premium", {}).items() if v > time.time()])
-        await q.message.reply_text(f"📊 إحصائيات:\n👥 {len(stats['users'])}\n🎬 {stats['videos']}\n⭐ مميزين: {prem_count}\n📢 {stats['ads_shown']}\n🚫 {len(stats.get('banned',[]))}\n📢 قنوات إجبارية: {stats.get('force_channels',[])}")
-    elif q.data == "admin_premium":
-        lst = "\n".join([f"{k} - {datetime.datetime.fromtimestamp(v).strftime('%Y-%m-%d')}" for k,v in stats.get("premium", {}).items() if v > time.time()]) or "لا يوجد"
-        await q.message.reply_text(f"⭐ المميزين:\n{lst}")
-    elif q.data == "admin_broadcast":
-        user_state[q.from_user.id] = "broadcast"; await q.message.reply_text("📢 ارسل رسالة الإذاعة:")
-    elif q.data == "admin_ban":
-        user_state[q.from_user.id] = "ban"; await q.message.reply_text("🚫 ارسل ايدي للحظر، أو للحذف ارسل: فك + الايدي\nمثال: 123456789\nمثال فك: فك 123456789")
-    elif q.data == "admin_gift":
-        user_state[q.from_user.id] = "gift"; await q.message.reply_text("🎁 ارسل: الايدي + الأيام\nمثال: 123456789 30")
-    elif q.data == "admin_add_channel":
-        user_state[q.from_user.id] = "add_channel"; await q.message.reply_text("➕ ارسل يوزر القناة اللي تشتي تضيفها إجباري:\nمثال: @Y_EMEN21s\n\nملاحظة: لازم تخلي البوت أدمن في القناة عشان يقدر يتحقق من الاشتراك.")
-    elif q.data == "admin_list_channels":
-        await q.message.reply_text(f"📋 القنوات الإجبارية الحالية:\n" + "\n".join(stats.get("force_channels", [])))
-    elif q.data == "admin_del_channel":
-        user_state[q.from_user.id] = "del_channel"; await q.message.reply_text("🗑 ارسل يوزر القناة اللي تشتي تحذفها:\nمثال: @Y_EMEN21s")
-    elif q.data == "admin_price_month":
-        user_state[q.from_user.id] = "price_month"; await q.message.reply_text(f"💰 السعر الحالي للشهر: {stats.get('price_month',50)} نجمة\nارسل السعر الجديد، مثال: 100")
-    elif q.data == "admin_price_year":
-        user_state[q.from_user.id] = "price_year"; await q.message.reply_text(f"💰 السعر الحالي للسنة: {stats.get('price_year',300)} نجمة\nارسل السعر الجديد، مثال: 500")
-
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; txt = (update.message.text or "").strip()
-    if uid == ADMIN_ID and uid in user_state:
-        st = user_state.pop(uid)
-        if st == "broadcast":
-            sent = 0
-            for u in stats["users"]:
-                try: await context.bot.send_message(u, txt); sent += 1
-                except: pass
-            await update.message.reply_text(f"✅ تمت الإذاعة لـ {sent}"); return
-        if st == "ban":
-            if txt.startswith("فك"):
-                target = int(txt.replace("فك","").strip())
-                if target in stats.get("banned", []): stats["banned"].remove(target); save_stats(stats)
-                await update.message.reply_text(f"✅ فك حظر {target}"); return
-            stats.setdefault("banned", []).append(int(txt)); save_stats(stats); await update.message.reply_text(f"✅ حظر {txt}"); return
-        if st == "gift":
-            parts = txt.split(); stats.setdefault("premium", {})[str(int(parts[0]))] = time.time() + int(parts[1])*86400; save_stats(stats); await update.message.reply_text(f"✅ اعطيت {parts[0]} اشتراك {parts[1]} يوم"); return
-        if st == "add_channel":
-            ch = txt if txt.startswith("@") else "@"+txt
-            if ch not in stats["force_channels"]: stats["force_channels"].append(ch); save_stats(stats)
-            await update.message.reply_text(f"✅ تمت إضافة {ch} كقناة إجبارية.\nذلحين أي عضو جديد ما يقدر يستخدم البوت إلا إذا اشترك فيها. هذا هو التمويل."); return
-        if st == "del_channel":
-            ch = txt if txt.startswith("@") else "@"+txt
-            if ch in stats["force_channels"]: stats["force_channels"].remove(ch); save_stats(stats)
-            await update.message.reply_text(f"✅ تم حذف {ch}"); return
-        if st == "price_month":
-            stats["price_month"] = int(txt); save_stats(stats); await update.message.reply_text(f"✅ سعر الشهر صار {txt} نجمة"); return
-        if st == "price_year":
-            stats["price_year"] = int(txt); save_stats(stats); await update.message.reply_text(f"✅ سعر السنة صار {txt} نجمة"); return
-    if uid in user_state and user_state[uid] == "trim":
+    uid = str(update.effective_user.id)
+    data["users"][uid] = {"name": update.effective_user.first_name}
+    save(data)
+    for ch in data["channels"]:
         try:
-            a,b = txt.replace(" ","").split("-")
-            pending[uid]["trim_start"] = a; pending[uid]["trim_end"] = b; user_state.pop(uid)
-            await update.message.reply_text(f"✂️ بقص من {a} إلى {b}\nاختار الجودة:"); await show_quality_buttons(update.message, uid); return
-        except: await update.message.reply_text("❌ ارسل كذا: 0:30-1:30"); return
+            m = await context.bot.get_chat_member(ch, update.effective_user.id)
+            if m.status in ["left","kicked"]:
+                kb = [[InlineKeyboardButton(f"اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")],[InlineKeyboardButton("✅ تحققت", callback_data="check_sub")]]
+                await update.message.reply_text(f"⚠️ لازم تشترك في {ch}", reply_markup=InlineKeyboardMarkup(kb))
+                return
+        except: pass
+    kb = []
+    if data.get("promo_link"):
+        kb.append([InlineKeyboardButton("💰 تمويل قناتك", url=data["promo_link"])])
+    kb.append([InlineKeyboardButton("⭐ اشتراك مميز", callback_data="premium")])
+    await update.message.reply_text("🔥 بوت ضغط الفيديو - يصغّر الحجم ويحافظ على الجودة\n\nمن 1 ميجا إلى 2 جيجا\n\nارسل فيديو واختر الحجم اللي تريده", reply_markup=InlineKeyboardMarkup(kb))
 
-async def show_quality_buttons(msg, uid):
-    await msg.reply_text("اختار الجودة:", reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔥 4K ⭐ مميز", callback_data="v_2160")],
-        [InlineKeyboardButton("💎 2K", callback_data="v_1440")],
-        [InlineKeyboardButton("✅ 1080p", callback_data="v_1080")],
-        [InlineKeyboardButton("📺 720p", callback_data="v_720")],
-        [InlineKeyboardButton("📦 480p", callback_data="v_480")],
-        [InlineKeyboardButton("📱 360p", callback_data="v_360")],
-        [InlineKeyboardButton("🐢 240p", callback_data="v_240")],
-        [InlineKeyboardButton("🐌 144p", callback_data="v_144")],
-        [InlineKeyboardButton("🤖 ذكي", callback_data="v_auto")],
-        [InlineKeyboardButton("🎵 MP3 / صوتي", callback_data="show_audio")],
-    ]))
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ انت مش مدير"); return
+    promo = data.get("promo_link") or "ما فيه رابط"
+    await update.message.reply_text(f"🛠 لوحة المدير\n\n👥 المستخدمين: {len(data['users'])}\n📢 القنوات: {len(data['channels'])}\n💾 الحد: من 1 ميجا الى 2 جيجا\n💰 رابط التمويل: {promo}\n\n➕ اضافة قناة: @اسم_القناة\n🗑 حذف: حذف @اسم_القناة\n💰 سعر_شهر 100\n💰 سعر_سنة 500\n📢 اذاعة + رسالتك\n💰 تمويل + الرابط\n🗑 حذف تمويل")
 
-async def on_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message; uid = update.effective_user.id
-    if uid in stats.get("banned", []): return
-    # فحص إجباري قبل الضغط
-    not_joined = await check_force_sub(context, uid)
-    if not_joined:
-        await send_force_msg(msg, not_joined); return
-    if not can_use(uid):
-        await msg.reply_text(f"❌ خلصت الـ 3 المجانية.\nاشترك: {stats.get('price_month',50)} نجمة / شهر", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ اشتراك", callback_data="buy")]])); return
-    file_obj = msg.video or msg.document
-    if not file_obj: return
-    pending[uid] = {"file_id": file_obj.file_id, "file_name": getattr(file_obj, "file_name", "video.mp4") or "video.mp4", "caption": msg.caption or "", "size": file_obj.file_size, "trim_start": None, "trim_end": None}
-    await msg.reply_text(f"📥 تم استلام ({file_obj.file_size/(1024*1024):.1f} MB)\nاختار:", reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 ضغط", callback_data="menu_quality")],
-        [InlineKeyboardButton("✂️ قص", callback_data="menu_trim")],
-        [InlineKeyboardButton("🎵 صوت", callback_data="show_audio")],
-        [InlineKeyboardButton("⭐ اشتراك", callback_data="buy")],
-    ]))
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    vid = msg.video or msg.document
+    if not vid: return
+    size_mb = vid.file_size / 1024 / 1024
+    if vid.file_size > MAX_SIZE:
+        await msg.reply_text(f"❌ الفيديو {size_mb:.0f} ميجا، أكبر من 2 جيجا"); return
+    context.user_data["file_id"] = vid.file_id
+    context.user_data["file_size"] = vid.file_size
+    kb = [
+        [InlineKeyboardButton("🎬 720p - جودة عالية", callback_data="c_720_high")],
+        [InlineKeyboardButton("🎬 480p - متوازن", callback_data="c_480_mid")],
+        [InlineKeyboardButton("📉 360p - حجم صغير", callback_data="c_360_small")],
+        [InlineKeyboardButton("📉 240p - صغير جداً", callback_data="c_240_tiny")],
+        [InlineKeyboardButton("📉 144p - أصغر شي", callback_data="c_144_mini")],
+        [InlineKeyboardButton("📉 96p - أصغر شي على الإطلاق 🔥", callback_data="c_96_mini")],
+        [InlineKeyboardButton("✂️ قص فيديو", callback_data="trim")],
+        [InlineKeyboardButton("🔊 صوت - جودة عالية 128k", callback_data="a_128")],
+        [InlineKeyboardButton("🔊 صوت - صغير 64k", callback_data="a_64")],
+        [InlineKeyboardButton("🔊 صوت - أصغر شي 32k", callback_data="a_32")],
+        [InlineKeyboardButton("⭐ اشتراك مميز", callback_data="premium")],
+    ]
+    if data.get("promo_link"):
+        kb.append([InlineKeyboardButton("💰 تمويل قناتك", url=data["promo_link"])])
+    await msg.reply_text(f"✅ استلمت: {size_mb:.1f} ميجا\n\nاختر كيف تريد تصغيره:", reply_markup=InlineKeyboardMarkup(kb))
 
-async def on_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer(); uid = q.from_user.id
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
     if q.data == "check_sub":
-        not_joined = await check_force_sub(context, uid)
-        if not not_joined:
-            await q.message.reply_text("✅ تمام! اشتركت في الكل، ذلحين ارسل الفيديو.")
-        else:
-            await send_force_msg(q.message, not_joined)
-        return
-    if q.data == "menu_quality": await show_quality_buttons(q.message, uid); return
-    if q.data == "menu_trim":
-        user_state[uid] = "trim"; await q.message.reply_text("✂️ ارسل وقت القص: 0:30-1:30"); return
-    if q.data == "show_audio":
-        await q.message.reply_text("اختار الصوت:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵 MP3 320", callback_data="a_mp3_320")],
-            [InlineKeyboardButton("🎵 MP3 128", callback_data="a_mp3_128")],
-            [InlineKeyboardButton("🎵 MP3 64", callback_data="a_mp3_64")],
-            [InlineKeyboardButton("🎤 رسالة صوتية", callback_data="a_voice")],
-        ])); return
-    if q.data == "buy":
-        pm = stats.get("price_month", 50); py = stats.get("price_year", 300)
-        await q.message.reply_text(f"⭐ الاشتراك المميز:\n✅ غير محدود\n✅ 4K\n✅ قص غير محدود\n\nاختار:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⭐ شهر - {pm} نجمة", callback_data="buy_month")],
-            [InlineKeyboardButton(f"⭐ سنة - {py} نجمة", callback_data="buy_year")],
-        ])); return
-    if q.data in ["buy_month", "buy_year"]:
-        stars = stats.get("price_month", 50) if q.data == "buy_month" else stats.get("price_year", 300)
-        days = 30 if q.data == "buy_month" else 365
-        await context.bot.send_invoice(q.message.chat_id, title="اشتراك مميز", description=f"اشتراك {days} يوم", payload=f"premium_{days}", provider_token="", currency="XTR", prices=[LabeledPrice("اشتراك", stars)])
-        return
-    is_audio = q.data.startswith("a_"); key = q.data.replace("v_", "").replace("a_", "")
-    if uid not in pending: return
-    if key == "2160" and not is_premium(uid):
-        await q.message.reply_text("❌ 4K للمميزين فقط.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ اشتراك", callback_data="buy")]])); return
-    data = pending[uid]
-    try:
-        tg_file = await context.bot.get_file(data["file_id"]); input_path = f"input_{uid}.mp4"; base_name = os.path.splitext(data["file_name"])[0]
-        await tg_file.download_to_drive(input_path)
-        trim_args = ["-ss", data["trim_start"], "-to", data["trim_end"]] if data.get("trim_start") else []
-        await q.message.reply_text("⏳ جاري المعالجة...")
-        if is_audio:
-            aq = AUDIO_QUALITIES[key]; output_path = f"{base_name}.{aq['ext']}"
-            cmd = ["ffmpeg", "-y"] + trim_args + ["-i", input_path, "-map_metadata", "0", "-metadata", f"title={base_name}", "-vn", "-c:a", "libopus" if aq['ext']=="ogg" else "libmp3lame", "-b:a", aq['bitrate'], output_path]
-            label = aq['label']
-        else:
-            qq = VIDEO_QUALITIES[key]; output_path = f"{base_name}_{key}p.mp4"
-            cmd = ["ffmpeg", "-y"] + trim_args + ["-i", input_path, "-map_metadata", "0", "-metadata", f"title={base_name}", "-vcodec", "libx264", "-crf", qq["crf"], "-preset", qq["preset"], "-vf", f"scale='min({qq['scale']},iw)':-2", "-acodec", "aac", "-b:a", qq["audio"], "-movflags", "+faststart", output_path]
-            label = qq['label']
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not os.path.exists(output_path): await q.message.reply_text("❌ فشل."); return
-        old_mb = data["size"] / (1024*1024); new_mb = os.path.getsize(output_path) / (1024*1024); saved = int((1 - new_mb/old_mb)*100) if old_mb>0 else 0
-        add_use(uid); stats["videos"] += 1; stats["ads_shown"] += 1; save_stats(stats)
-        trim_txt = f"\n✂️ مقصوص {data['trim_start']} - {data['trim_end']}" if data.get("trim_start") else ""
-        await q.message.reply_text(f"✅ تم! {label}{trim_txt}\n📦 {old_mb:.1f} MB -> {new_mb:.1f} MB (وفرت {saved}%)\nمجاني بدعم من {CHANNEL}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 قناتنا", url=f"https://t.me/{CHANNEL.replace('@','')}")]]))
-        final_caption = (data["caption"] + f"\n\nبواسطة {CHANNEL}") if data["caption"] else f"بواسطة {CHANNEL}"
-        with open(output_path, "rb") as f:
-            if is_audio:
-                if key == "voice": await q.message.reply_voice(voice=f, caption=final_caption)
-                else: await q.message.reply_audio(audio=f, filename=output_path, caption=final_caption, title=base_name)
-            else: await q.message.reply_video(video=f, filename=output_path, caption=final_caption)
-        for p in [input_path, output_path]:
-            if os.path.exists(p): os.remove(p)
-        del pending[uid]
-    except Exception as e: logging.error(e); await q.message.reply_text(f"❌ خطأ: {e}")
+        await q.message.reply_text("✅ ارسل /start"); return
+    if q.data == "trim":
+        context.user_data["waiting_trim"] = True
+        await q.message.reply_text("✂️ ارسل وقت القص كذا:\n0:30-1:30"); return
+    if q.data == "premium":
+        kb = [[InlineKeyboardButton(f"شهر - {data['prices']['month']} ⭐", callback_data="buy_month")],[InlineKeyboardButton(f"سنة - {data['prices']['year']} ⭐", callback_data="buy_year")]]
+        await q.message.reply_text("⭐ اختر الاشتراك:", reply_markup=InlineKeyboardMarkup(kb)); return
+    VIDEO_PRESETS = {
+        "c_720_high": ("720", "23", "128k", "medium"),
+        "c_480_mid":  ("480", "26", "96k", "medium"),
+        "c_360_small":("360", "28", "64k", "veryfast"),
+        "c_240_tiny": ("240", "30", "48k", "veryfast"),
+        "c_144_mini": ("144", "32", "32k", "veryfast"),
+        "c_96_mini":  ("96", "35", "24k", "veryfast"),
+    }
+    AUDIO_PRESETS = {"a_128": "128k","a_64": "64k","a_32": "32k"}
+    if q.data in VIDEO_PRESETS or q.data in AUDIO_PRESETS:
+        size_mb = context.user_data.get("file_size",0)/1024/1024
+        await q.message.reply_text(f"⏳ جاري تحميل {size_mb:.1f} ميجا...")
+        try:
+            f = await context.bot.get_file(context.user_data["file_id"])
+            in_path = f"in_{q.from_user.id}.mp4"
+            await f.download_to_drive(in_path)
+            real = os.path.getsize(in_path)/1024/1024
+            if q.data in AUDIO_PRESETS:
+                bitrate = AUDIO_PRESETS[q.data]
+                out = f"out_{q.from_user.id}.mp3"
+                subprocess.run(["ffmpeg","-y","-i",in_path,"-vn","-ac","1","-ar","22050","-b:a",bitrate,out], check=True)
+                label = f"صوت {bitrate}"
+            else:
+                res, crf, abit, preset = VIDEO_PRESETS[q.data]
+                out = f"out_{q.from_user.id}.mp4"
+                subprocess.run(["ffmpeg","-y","-i",in_path,"-vf",f"scale=-2:{res}","-c:v","libx264","-crf",crf,"-preset",preset,"-c:a","aac","-b:a",abit,"-movflags","+faststart",out], check=True)
+                label = f"{res}p"
+            out_size = os.path.getsize(out)/1024/1024
+            saved = 100 - (out_size/real*100) if real>0 else 0
+            await q.message.reply_text(f"✅ تم التصغير! من {real:.1f} → {out_size:.1f} ميجا - وفرنا {saved:.0f}%")
+            if q.data in AUDIO_PRESETS:
+                await q.message.reply_audio(audio=open(out,"rb"), caption=f"✅ صوت {label} - من {real:.1f}MB → {out_size:.1f}MB")
+            else:
+                await q.message.reply_document(document=open(out,"rb"), caption=f"✅ فيديو {label} - من {real:.1f}MB → {out_size:.1f}MB 🔥")
+            os.remove(in_path); os.remove(out)
+        except Exception as e:
+            await q.message.reply_text(f"❌ خطأ: {e}")
 
-async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
-async def success_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; payload = update.message.successful_payment.invoice_payload; days = 30 if "30" in payload else 365
-    stats.setdefault("premium", {})[str(uid)] = time.time() + days*86400; save_stats(stats)
-    await update.message.reply_text(f"🎉 صرت مميز {days} يوم ⭐")
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text.strip()
+    uid = update.effective_user.id
+    if context.user_data.get("waiting_trim"):
+        context.user_data["waiting_trim"] = False
+        try:
+            a,b = txt.split("-")
+            def tosec(s):
+                p = list(map(int,s.split(":")))
+                return p[0]*60+p[1] if len(p)==2 else p[0]
+            s1, s2 = tosec(a), tosec(b)
+            await update.message.reply_text("⏳ جاري القص...")
+            f = await context.bot.get_file(context.user_data["file_id"])
+            in_path = f"in_{uid}.mp4"; await f.download_to_drive(in_path)
+            out = f"trim_{uid}.mp4"
+            subprocess.run(["ffmpeg","-y","-ss",str(s1),"-to",str(s2),"-i",in_path,"-c","copy",out], check=True)
+            await update.message.reply_document(document=open(out,"rb"), caption="✅ تم القص")
+            os.remove(in_path); os.remove(out)
+        except: await update.message.reply_text("❌ اكتب كذا: 0:30-1:30")
+        return
+    if uid == ADMIN_ID:
+        if txt.startswith("تمويل "):
+            link = txt.replace("تمويل ","").strip()
+            data["promo_link"] = link; save(data)
+            await update.message.reply_text(f"✅ تم حفظ رابط التمويل:\n{link}"); return
+        if txt == "حذف تمويل":
+            data["promo_link"] = ""; save(data)
+            await update.message.reply_text("✅ تم حذف زر التمويل"); return
+        if txt.startswith("@"):
+            if txt not in data["channels"]: data["channels"].append(txt); save(data)
+            await update.message.reply_text(f"✅ تمت اضافة {txt}"); return
+        if txt.startswith("حذف @"):
+            ch = txt.replace("حذف ","").strip()
+            if ch in data["channels"]: data["channels"].remove(ch); save(data)
+            await update.message.reply_text(f"✅ تم حذف {ch}"); return
+        if txt.startswith("سعر_شهر"):
+            data["prices"]["month"] = int(txt.split()[1]); save(data)
+            await update.message.reply_text("✅ تم تحديث سعر الشهر"); return
+        if txt.startswith("سعر_سنة"):
+            data["prices"]["year"] = int(txt.split()[1]); save(data)
+            await update.message.reply_text("✅ تم تحديث سعر السنة"); return
+        if txt.startswith("اذاعة "):
+            msg = txt.replace("اذاعة ","")
+            c=0
+            for u in data["users"]:
+                try: await context.bot.send_message(u, msg); c+=1
+                except: pass
+            await update.message.reply_text(f"✅ تمت الاذاعة لـ {c}"); return
+
+async def post_init(app):
+    await app.bot.set_my_commands([BotCommand("start","تشغيل البوت 🔥"), BotCommand("admin","لوحة المدير 🛠")])
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).base_url(BASE_URL).base_file_url(BASE_URL + "/file").build()
+    app = ApplicationBuilder().token(TOKEN).base_url(BOT_API_URL).build()
+    app.post_init = post_init
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, on_video))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
-    app.add_handler(CallbackQueryHandler(on_choice, pattern="^(menu_|show_|buy|v_|a_|check_sub|noop)"))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, success_payment))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("Bot Started"); app.run_polling()
