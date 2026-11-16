@@ -17,6 +17,20 @@ def load():
 def save(d): json.dump(d, open(DB,"w"))
 data = load()
 
+def admin_kb():
+    promo = data.get("promo_link") or "ما فيه"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ اضافة قناة اجباري", callback_data="adm_add_ch")],
+        [InlineKeyboardButton("🗑 حذف قناة اجباري", callback_data="adm_del_ch")],
+        [InlineKeyboardButton("📢 عرض القنوات", callback_data="adm_list_ch")],
+        [InlineKeyboardButton(f"💰 تمويل قناتك: {promo[:25]}", callback_data="adm_set_promo")],
+        [InlineKeyboardButton("🗑 حذف تمويل", callback_data="adm_del_promo")],
+        [InlineKeyboardButton(f"💰 سعر شهر: {data['prices']['month']}", callback_data="adm_month")],
+        [InlineKeyboardButton(f"💰 سعر سنة: {data['prices']['year']}", callback_data="adm_year")],
+        [InlineKeyboardButton("📢 اذاعة للكل", callback_data="adm_broadcast")],
+        [InlineKeyboardButton("👥 عدد المستخدمين", callback_data="adm_users")],
+    ])
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     data["users"][uid] = {"name": update.effective_user.first_name}
@@ -38,8 +52,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ انت مش مدير"); return
-    promo = data.get("promo_link") or "ما فيه رابط"
-    await update.message.reply_text(f"🛠 لوحة المدير\n\n👥 المستخدمين: {len(data['users'])}\n📢 القنوات: {len(data['channels'])}\n💾 الحد: من 1 ميجا الى 2 جيجا\n💰 رابط التمويل: {promo}\n\n➕ اضافة قناة: @اسم_القناة\n🗑 حذف: حذف @اسم_القناة\n💰 سعر_شهر 100\n💰 سعر_سنة 500\n📢 اذاعة + رسالتك\n💰 تمويل + الرابط\n🗑 حذف تمويل")
+    await update.message.reply_text(f"🛠 لوحة المدير\n\n👥 المستخدمين: {len(data['users'])}\n📢 القنوات: {len(data['channels'])}\n💾 الحد: من 1 ميجا الى 2 جيجا\n\nاضغط على الزر اللي تريده:", reply_markup=admin_kb())
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -69,14 +82,57 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    if q.data == "check_sub":
+    d = q.data
+
+    # --- لوحة المدير بالأزرار ---
+    if d.startswith("adm_"):
+        if q.from_user.id != ADMIN_ID:
+            await q.message.reply_text("❌ انت مش مدير"); return
+        if d == "adm_add_ch":
+            context.user_data["waiting"] = "add_ch"
+            await q.message.reply_text("➕ ارسل اسم القناة كذا:\n@اسم_القناة"); return
+        if d == "adm_del_ch":
+            if not data["channels"]:
+                await q.message.reply_text("❌ ما فيه قنوات"); return
+            kb = [[InlineKeyboardButton(f"🗑 حذف {ch}", callback_data=f"delch_{ch}")] for ch in data["channels"]]
+            kb.append([InlineKeyboardButton("🔙 رجوع", callback_data="adm_back")])
+            await q.message.reply_text("اختر القناة اللي تريد حذفها:", reply_markup=InlineKeyboardMarkup(kb)); return
+        if d.startswith("delch_"):
+            ch = d.replace("delch_","")
+            if ch in data["channels"]: data["channels"].remove(ch); save(data)
+            await q.message.reply_text(f"✅ تم حذف {ch}", reply_markup=admin_kb()); return
+        if d == "adm_list_ch":
+            txt = "\n".join(data["channels"]) or "ما فيه قنوات"
+            await q.message.reply_text(f"📢 القنوات الاجبارية:\n{txt}", reply_markup=admin_kb()); return
+        if d == "adm_set_promo":
+            context.user_data["waiting"] = "promo"
+            await q.message.reply_text("💰 ارسل رابط التمويل الجديد:\nhttps://t.me/قناتك"); return
+        if d == "adm_del_promo":
+            data["promo_link"] = ""; save(data)
+            await q.message.reply_text("✅ تم حذف زر التمويل", reply_markup=admin_kb()); return
+        if d == "adm_month":
+            context.user_data["waiting"] = "month"
+            await q.message.reply_text("💰 ارسل سعر الشهر الجديد، رقم فقط:\nمثال: 100"); return
+        if d == "adm_year":
+            context.user_data["waiting"] = "year"
+            await q.message.reply_text("💰 ارسل سعر السنة الجديد، رقم فقط:\nمثال: 500"); return
+        if d == "adm_broadcast":
+            context.user_data["waiting"] = "broadcast"
+            await q.message.reply_text("📢 ارسل رسالة الاذاعة ذلحين:"); return
+        if d == "adm_users":
+            await q.message.reply_text(f"👥 عدد المستخدمين: {len(data['users'])}", reply_markup=admin_kb()); return
+        if d == "adm_back":
+            await q.message.reply_text("🛠 لوحة المدير:", reply_markup=admin_kb()); return
+
+    if d == "check_sub":
         await q.message.reply_text("✅ ارسل /start"); return
-    if q.data == "trim":
+    if d == "trim":
         context.user_data["waiting_trim"] = True
         await q.message.reply_text("✂️ ارسل وقت القص كذا:\n0:30-1:30"); return
-    if q.data == "premium":
+    if d == "premium":
         kb = [[InlineKeyboardButton(f"شهر - {data['prices']['month']} ⭐", callback_data="buy_month")],[InlineKeyboardButton(f"سنة - {data['prices']['year']} ⭐", callback_data="buy_year")]]
         await q.message.reply_text("⭐ اختر الاشتراك:", reply_markup=InlineKeyboardMarkup(kb)); return
+
     VIDEO_PRESETS = {
         "c_720_high": ("720", "23", "128k", "medium"),
         "c_480_mid":  ("480", "26", "96k", "medium"),
@@ -86,7 +142,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "c_96_mini":  ("96", "35", "24k", "veryfast"),
     }
     AUDIO_PRESETS = {"a_128": "128k","a_64": "64k","a_32": "32k"}
-    if q.data in VIDEO_PRESETS or q.data in AUDIO_PRESETS:
+    if d in VIDEO_PRESETS or d in AUDIO_PRESETS:
         size_mb = context.user_data.get("file_size",0)/1024/1024
         await q.message.reply_text(f"⏳ جاري تحميل {size_mb:.1f} ميجا...")
         try:
@@ -94,26 +150,26 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             in_path = f"in_{q.from_user.id}.mp4"
             await f.download_to_drive(in_path)
             real = os.path.getsize(in_path)/1024/1024
-            if q.data in AUDIO_PRESETS:
-                bitrate = AUDIO_PRESETS[q.data]
+            if d in AUDIO_PRESETS:
+                bitrate = AUDIO_PRESETS[d]
                 out = f"out_{q.from_user.id}.mp3"
                 subprocess.run(["ffmpeg","-y","-i",in_path,"-vn","-ac","1","-ar","22050","-b:a",bitrate,out], check=True)
                 label = f"صوت {bitrate}"
             else:
-                res, crf, abit, preset = VIDEO_PRESETS[q.data]
+                res, crf, abit, preset = VIDEO_PRESETS[d]
                 out = f"out_{q.from_user.id}.mp4"
                 subprocess.run(["ffmpeg","-y","-i",in_path,"-vf",f"scale=-2:{res}","-c:v","libx264","-crf",crf,"-preset",preset,"-c:a","aac","-b:a",abit,"-movflags","+faststart",out], check=True)
                 label = f"{res}p"
             out_size = os.path.getsize(out)/1024/1024
             saved = 100 - (out_size/real*100) if real>0 else 0
             await q.message.reply_text(f"✅ تم التصغير! من {real:.1f} → {out_size:.1f} ميجا - وفرنا {saved:.0f}%")
-            if q.data in AUDIO_PRESETS:
+            if d in AUDIO_PRESETS:
                 await q.message.reply_audio(audio=open(out,"rb"), caption=f"✅ صوت {label} - من {real:.1f}MB → {out_size:.1f}MB")
             else:
                 await q.message.reply_document(document=open(out,"rb"), caption=f"✅ فيديو {label} - من {real:.1f}MB → {out_size:.1f}MB 🔥")
             os.remove(in_path); os.remove(out)
         except Exception as e:
-            await q.message.reply_text(f"❌ خطأ: {e}")
+            await q.message.reply_text(f"❌ خطأ: {e}\n\nاذا كان File is too big، لازم تسوي Local API في Railway")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
@@ -135,34 +191,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(in_path); os.remove(out)
         except: await update.message.reply_text("❌ اكتب كذا: 0:30-1:30")
         return
-    if uid == ADMIN_ID:
-        if txt.startswith("تمويل "):
-            link = txt.replace("تمويل ","").strip()
-            data["promo_link"] = link; save(data)
-            await update.message.reply_text(f"✅ تم حفظ رابط التمويل:\n{link}"); return
-        if txt == "حذف تمويل":
-            data["promo_link"] = ""; save(data)
-            await update.message.reply_text("✅ تم حذف زر التمويل"); return
-        if txt.startswith("@"):
-            if txt not in data["channels"]: data["channels"].append(txt); save(data)
-            await update.message.reply_text(f"✅ تمت اضافة {txt}"); return
-        if txt.startswith("حذف @"):
-            ch = txt.replace("حذف ","").strip()
-            if ch in data["channels"]: data["channels"].remove(ch); save(data)
-            await update.message.reply_text(f"✅ تم حذف {ch}"); return
-        if txt.startswith("سعر_شهر"):
-            data["prices"]["month"] = int(txt.split()[1]); save(data)
-            await update.message.reply_text("✅ تم تحديث سعر الشهر"); return
-        if txt.startswith("سعر_سنة"):
-            data["prices"]["year"] = int(txt.split()[1]); save(data)
-            await update.message.reply_text("✅ تم تحديث سعر السنة"); return
-        if txt.startswith("اذاعة "):
-            msg = txt.replace("اذاعة ","")
+    # ردود أزرار المدير
+    if uid == ADMIN_ID and context.user_data.get("waiting"):
+        w = context.user_data.pop("waiting")
+        if w == "add_ch":
+            if txt.startswith("@") and txt not in data["channels"]:
+                data["channels"].append(txt); save(data)
+                await update.message.reply_text(f"✅ تمت اضافة {txt} كقناة اجبارية", reply_markup=admin_kb())
+            else: await update.message.reply_text("❌ ارسل كذا: @اسم_القناة")
+            return
+        if w == "promo":
+            data["promo_link"] = txt; save(data)
+            await update.message.reply_text(f"✅ تم حفظ رابط التمويل:\n{txt}", reply_markup=admin_kb()); return
+        if w == "month":
+            try: data["prices"]["month"] = int(txt); save(data); await update.message.reply_text("✅ تم تحديث سعر الشهر", reply_markup=admin_kb())
+            except: await update.message.reply_text("❌ ارسل رقم فقط")
+            return
+        if w == "year":
+            try: data["prices"]["year"] = int(txt); save(data); await update.message.reply_text("✅ تم تحديث سعر السنة", reply_markup=admin_kb())
+            except: await update.message.reply_text("❌ ارسل رقم فقط")
+            return
+        if w == "broadcast":
             c=0
             for u in data["users"]:
-                try: await context.bot.send_message(u, msg); c+=1
+                try: await context.bot.send_message(u, txt); c+=1
                 except: pass
-            await update.message.reply_text(f"✅ تمت الاذاعة لـ {c}"); return
+            await update.message.reply_text(f"✅ تمت الاذاعة لـ {c}", reply_markup=admin_kb()); return
+    # أوامر قديمة لازالت تشتغل
+    if uid == ADMIN_ID:
+        if txt.startswith("تمويل "):
+            data["promo_link"] = txt.replace("تمويل ","").strip(); save(data)
+            await update.message.reply_text("✅ تم حفظ رابط التمويل"); return
+        if txt.startswith("@") and txt not in data["channels"]:
+            data["channels"].append(txt); save(data)
+            await update.message.reply_text(f"✅ تمت اضافة {txt}"); return
 
 async def post_init(app):
     await app.bot.set_my_commands([BotCommand("start","تشغيل البوت 🔥"), BotCommand("admin","لوحة المدير 🛠")])
