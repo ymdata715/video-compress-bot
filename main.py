@@ -17,6 +17,22 @@ def load():
 def save(d): json.dump(d, open(DB,"w"))
 data = load()
 
+async def is_subscribed(context, user_id):
+    # يرجع True اذا مشترك في كل القنوات، و False اذا مو مشترك
+    for ch in data["channels"]:
+        try:
+            m = await context.bot.get_chat_member(ch, user_id)
+            if m.status in ["left","kicked"]:
+                return False, ch
+        except:
+            # اذا البوت مو مشرف في القناة، ما يقدر يتحقق، نعتبره مو مشترك عشان ما يتخطى
+            return False, ch
+    return True, None
+
+async def send_sub_msg(message, ch):
+    kb = [[InlineKeyboardButton(f"اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")],[InlineKeyboardButton("✅ تحققت - اضغط هنا", callback_data="check_sub")]]
+    await message.reply_text(f"⚠️ عذرا، عليك الاشتراك في القناة أولاً\n\n👉 اشترك في {ch} ثم اضغط تحققت", reply_markup=InlineKeyboardMarkup(kb))
+
 def admin_kb():
     promo = data.get("promo_link") or "ما فيه"
     return InlineKeyboardMarkup([
@@ -35,14 +51,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     data["users"][uid] = {"name": update.effective_user.first_name}
     save(data)
-    for ch in data["channels"]:
-        try:
-            m = await context.bot.get_chat_member(ch, update.effective_user.id)
-            if m.status in ["left","kicked"]:
-                kb = [[InlineKeyboardButton(f"اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")],[InlineKeyboardButton("✅ تحققت", callback_data="check_sub")]]
-                await update.message.reply_text(f"⚠️ لازم تشترك في {ch}", reply_markup=InlineKeyboardMarkup(kb))
-                return
-        except: pass
+    ok, ch = await is_subscribed(context, update.effective_user.id)
+    if not ok:
+        await send_sub_msg(update.message, ch); return
     kb = []
     if data.get("promo_link"):
         kb.append([InlineKeyboardButton("💰 تمويل قناتك", url=data["promo_link"])])
@@ -55,6 +66,10 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🛠 لوحة المدير\n\n👥 المستخدمين: {len(data['users'])}\n📢 القنوات: {len(data['channels'])}\n💾 الحد: من 1 ميجا الى 2 جيجا\n\nاضغط على الزر اللي تريده:", reply_markup=admin_kb())
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # --- التحقق الجديد: حتى لو ارسل فيديو على طول ---
+    ok, ch = await is_subscribed(context, update.effective_user.id)
+    if not ok:
+        await send_sub_msg(update.message, ch); return
     msg = update.message
     vid = msg.video or msg.document
     if not vid: return
@@ -83,8 +98,11 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     d = q.data
-
-    # --- لوحة المدير بالأزرار ---
+    if d == "check_sub":
+        ok, ch = await is_subscribed(context, q.from_user.id)
+        if not ok:
+            await q.message.reply_text(f"⚠️ لسه ما اشتركت في {ch}\nاشترك بعدين اضغط تحققت"); return
+        await q.message.reply_text("✅ تم التحقق! ذلحين ارسل فيديو"); return
     if d.startswith("adm_"):
         if q.from_user.id != ADMIN_ID:
             await q.message.reply_text("❌ انت مش مدير"); return
@@ -112,10 +130,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("✅ تم حذف زر التمويل", reply_markup=admin_kb()); return
         if d == "adm_month":
             context.user_data["waiting"] = "month"
-            await q.message.reply_text("💰 ارسل سعر الشهر الجديد، رقم فقط:\nمثال: 100"); return
+            await q.message.reply_text("💰 ارسل سعر الشهر الجديد، رقم فقط:"); return
         if d == "adm_year":
             context.user_data["waiting"] = "year"
-            await q.message.reply_text("💰 ارسل سعر السنة الجديد، رقم فقط:\nمثال: 500"); return
+            await q.message.reply_text("💰 ارسل سعر السنة الجديد، رقم فقط:"); return
         if d == "adm_broadcast":
             context.user_data["waiting"] = "broadcast"
             await q.message.reply_text("📢 ارسل رسالة الاذاعة ذلحين:"); return
@@ -123,16 +141,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(f"👥 عدد المستخدمين: {len(data['users'])}", reply_markup=admin_kb()); return
         if d == "adm_back":
             await q.message.reply_text("🛠 لوحة المدير:", reply_markup=admin_kb()); return
-
-    if d == "check_sub":
-        await q.message.reply_text("✅ ارسل /start"); return
     if d == "trim":
         context.user_data["waiting_trim"] = True
         await q.message.reply_text("✂️ ارسل وقت القص كذا:\n0:30-1:30"); return
     if d == "premium":
         kb = [[InlineKeyboardButton(f"شهر - {data['prices']['month']} ⭐", callback_data="buy_month")],[InlineKeyboardButton(f"سنة - {data['prices']['year']} ⭐", callback_data="buy_year")]]
         await q.message.reply_text("⭐ اختر الاشتراك:", reply_markup=InlineKeyboardMarkup(kb)); return
-
     VIDEO_PRESETS = {
         "c_720_high": ("720", "23", "128k", "medium"),
         "c_480_mid":  ("480", "26", "96k", "medium"),
@@ -143,6 +157,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     AUDIO_PRESETS = {"a_128": "128k","a_64": "64k","a_32": "32k"}
     if d in VIDEO_PRESETS or d in AUDIO_PRESETS:
+        # تحقق قبل الضغط كمان
+        ok, ch = await is_subscribed(context, q.from_user.id)
+        if not ok:
+            await send_sub_msg(q.message, ch); return
         size_mb = context.user_data.get("file_size",0)/1024/1024
         await q.message.reply_text(f"⏳ جاري تحميل {size_mb:.1f} ميجا...")
         try:
@@ -169,7 +187,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_document(document=open(out,"rb"), caption=f"✅ فيديو {label} - من {real:.1f}MB → {out_size:.1f}MB 🔥")
             os.remove(in_path); os.remove(out)
         except Exception as e:
-            await q.message.reply_text(f"❌ خطأ: {e}\n\nاذا كان File is too big، لازم تسوي Local API في Railway")
+            await q.message.reply_text(f"❌ خطأ: {e}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
@@ -191,7 +209,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(in_path); os.remove(out)
         except: await update.message.reply_text("❌ اكتب كذا: 0:30-1:30")
         return
-    # ردود أزرار المدير
     if uid == ADMIN_ID and context.user_data.get("waiting"):
         w = context.user_data.pop("waiting")
         if w == "add_ch":
@@ -217,14 +234,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try: await context.bot.send_message(u, txt); c+=1
                 except: pass
             await update.message.reply_text(f"✅ تمت الاذاعة لـ {c}", reply_markup=admin_kb()); return
-    # أوامر قديمة لازالت تشتغل
-    if uid == ADMIN_ID:
-        if txt.startswith("تمويل "):
-            data["promo_link"] = txt.replace("تمويل ","").strip(); save(data)
-            await update.message.reply_text("✅ تم حفظ رابط التمويل"); return
-        if txt.startswith("@") and txt not in data["channels"]:
-            data["channels"].append(txt); save(data)
-            await update.message.reply_text(f"✅ تمت اضافة {txt}"); return
 
 async def post_init(app):
     await app.bot.set_my_commands([BotCommand("start","تشغيل البوت 🔥"), BotCommand("admin","لوحة المدير 🛠")])
