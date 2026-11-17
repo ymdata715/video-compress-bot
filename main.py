@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 TOKEN = os.getenv("BOT_TOKEN")
 BOT_API_URL = os.getenv("BOT_API_URL", "https://api.telegram.org/bot")
+BOT_API_FILE_URL = BOT_API_URL.replace("/bot", "/file/bot")
 ADMIN_ID = 8452001738
 DB = "users.json"
 MAX_SIZE = 2 * 1024 * 1024 * 1024
@@ -239,7 +240,7 @@ async def post_init(app):
     await app.bot.set_my_commands([BotCommand("start","تشغيل البوت 🔥"), BotCommand("admin","لوحة المدير 🛠")])
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).base_url(BOT_API_URL).build()
+    app = ApplicationBuilder().token(TOKEN).base_url(BOT_API_URL).base_file_url(BOT_API_FILE_URL).build()
     app.post_init = post_init
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
